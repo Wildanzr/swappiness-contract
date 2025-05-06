@@ -5,7 +5,7 @@ import { vars } from "hardhat/config";
 const mnemonic: string = vars.get("MNEMONIC");
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.7.6",
+    version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
@@ -20,8 +20,10 @@ const config: HardhatUserConfig = {
         mnemonic,
       },
       forking: {
-        url: "https://eth-mainnet.g.alchemy.com/v2/ZlzkGJhwX4ik8IQeDXVoM5A3YLbVIMpe",
-        blockNumber: 22396742,
+        url: "https://base-mainnet.g.alchemy.com/v2/ZlzkGJhwX4ik8IQeDXVoM5A3YLbVIMpe",
+        blockNumber: 29834328,
+        // url: "https://eth-mainnet.g.alchemy.com/v2/ZlzkGJhwX4ik8IQeDXVoM5A3YLbVIMpe",
+        // blockNumber: 22396742,
       },
     },
   },
