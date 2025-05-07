@@ -14,6 +14,12 @@ contract Swappiness {
     IPermit2 public immutable permit2;
     IWETH public immutable weth;
 
+    // Add these constants at the top of your contract
+    address constant USDC_ADDRESS = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913; // Base USDC
+    address constant USDT_ADDRESS = 0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2; // Base USDT
+    address constant DAI_ADDRESS = 0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb; // Base DAI
+    address constant IDRX_ADDRESS = 0x18Bc5bcC660cf2B9cE3cd51a404aFe1a0cBD3C22; // Base IDRX
+
     event Error(string message);
     event SwapCompleted(address tokenIn, address tokenOut, uint256 amountOut, uint256 amountInUsed);
 
@@ -49,115 +55,41 @@ contract Swappiness {
         }
     }
 
-    /**
-     * @notice Swap with exact output amount specified
-     * @param tokenIn Address of input token (use address(0) for ETH)
-     * @param tokenOut Address of output token
-     * @param amountOut Exact amount of output tokens to receive
-     * @param amountInMaximum Maximum amount of input tokens to spend
-     * @return amountIn Actual amount of input tokens spent
-     */
-    function swapExactOutput(address tokenIn, address tokenOut, uint256 amountOut, uint256 amountInMaximum)
-        public
-        payable
-        returns (uint256 amountIn)
-    {
-        // Set up path for the swap
-        address[] memory path = new address[](2);
-        bytes memory commands;
-        bytes[] memory inputs;
-        bool isEthInput = tokenIn == address(0);
-        uint256 value = 0;
+    function simpleSwapExactOutput(uint256 amountOut) external payable {
+        if (msg.value == 0) revert("No ETH sent");
+        if (amountOut == 0) revert("AmountOut must be greater than zero");
 
-        // Handle different input token scenarios
-        if (isEthInput) {
-            // ETH -> tokenOut case
-            require(msg.value >= amountInMaximum, "Insufficient ETH sent");
-            value = amountInMaximum;
+        bytes memory commands =
+            abi.encodePacked(bytes1(uint8(Commands.WRAP_ETH)), bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
 
-            // Wrap ETH first then swap
-            commands = abi.encodePacked(bytes1(uint8(Commands.WRAP_ETH)), bytes1(uint8(Commands.V2_SWAP_EXACT_OUT)));
+        uint256 amount = msg.value;
+        bytes memory path = abi.encodePacked(USDC_ADDRESS, uint24(500), address(weth));
 
-            // Set up the swap path
-            path[0] = address(weth);
-            path[1] = tokenOut;
+        bytes[] memory inputs = new bytes[](2);
+        inputs[0] = abi.encode(address(this), amount);
+        inputs[1] = abi.encode(msg.sender, amountOut, msg.value, path, true);
 
-            // Prepare inputs
-            inputs = new bytes[](2);
-            inputs[0] = abi.encode(address(this), amountInMaximum);
-            inputs[1] = abi.encode(msg.sender, amountOut, amountInMaximum, path, true);
-        } else if (tokenIn == address(weth)) {
-            // WETH -> tokenOut case
-            // Ensure contract has enough WETHs
-            require(IERC20(tokenIn).balanceOf(address(this)) >= amountInMaximum, "Insufficient WETH balance");
+        uint256 deadline = block.timestamp + 15 * 60; // 15 minutes
 
-            // Single command to swap
-            commands = abi.encodePacked(bytes1(uint8(Commands.V2_SWAP_EXACT_OUT)));
-
-            // Set up the swap path
-            path[0] = tokenIn;
-            path[1] = tokenOut;
-
-            // Prepare inputs
-            inputs = new bytes[](1);
-            inputs[0] = abi.encode(msg.sender, amountOut, amountInMaximum, path, false);
-        } else {
-            // ERC20 -> tokenOut case
-            // Transfer tokens from user to contract first
-            IERC20(tokenIn).transferFrom(msg.sender, address(this), amountInMaximum);
-
-            // Approve router to use the tokens
-            IERC20(tokenIn).approve(address(permit2), amountInMaximum);
-
-            // Single command to swap
-            commands = abi.encodePacked(
-                bytes1(uint8(Commands.PERMIT2_TRANSFER_FROM)), bytes1(uint8(Commands.V2_SWAP_EXACT_OUT))
-            );
-
-            // Set up the swap path
-            path[0] = tokenIn;
-            path[1] = tokenOut;
-
-            // Prepare inputs for permit2 and swap
-            inputs = new bytes[](2);
-            inputs[0] = abi.encode(tokenIn, address(this), address(router), amountInMaximum);
-            inputs[1] = abi.encode(msg.sender, amountOut, amountInMaximum, path, false);
+        try router.execute{value: amount}(commands, inputs, deadline) {
+            emit SwapCompleted(address(weth), USDC_ADDRESS, amountOut, msg.value);
+        } catch (bytes memory reason) {
+            emit Error(string(reason));
         }
 
-        // Execute the swap
-        try router.execute{value: value}(commands, inputs, block.timestamp) {
-            // For exact output swaps, we need to assume a certain amount was used
-            // Since we can't get the return value directly, we'll use the maximum amount
-            amountIn = amountInMaximum;
-
-            // Note: For more accurate accounting, you could check token balances before and after the swap
-            // to determine exactly how much was used, but that adds complexity
-
-            // Refund unused ETH if needed (this won't happen now since we assume all was used)
-            if (isEthInput && amountIn < amountInMaximum) {
-                // Unwrap unused WETH and send it back
-                uint256 refundAmount = amountInMaximum - amountIn;
-                weth.withdraw(refundAmount);
-                (bool success,) = msg.sender.call{value: refundAmount}("");
-                require(success, "ETH refund failed");
-            }
-
-            emit SwapCompleted(isEthInput ? address(weth) : tokenIn, tokenOut, amountOut, amountIn);
-        } catch (bytes memory reason) {
-            // Handle failure
-            emit Error(string(reason));
-
-            // If ETH was sent and swap failed, refund the user
-            if (isEthInput) {
-                weth.withdraw(amountInMaximum);
-                (bool success,) = msg.sender.call{value: amountInMaximum}("");
-                require(success, "ETH refund failed");
-            } else if (tokenIn != address(weth)) {
-                // Return ERC20 tokens to user
-                IERC20(tokenIn).transfer(msg.sender, amountInMaximum);
-            }
-
-            revert(string(reason));
+        uint256 balanceAfter = address(this).balance;
+        if (balanceAfter > 0) {
+            payable(msg.sender).transfer(balanceAfter);
         }
     }
 }
+
+// V3
+// ETH/USDC		  0.05%
+// IDRX/USDC		0.01%
+// USDC/USDT		0.01%
+// ETH/USDT		  0.05%
+// EURC/USDC		0.30%
+// ETH/EURC		  0.30%
+// DAI/USDC		  0.01%
+// ETH/DAI			0.05%
