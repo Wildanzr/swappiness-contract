@@ -8,6 +8,16 @@ import {IUniswapV3Factory} from "./interfaces/IUniswapV3Factory.sol";
 import {IPermit2} from "./interfaces/IPermit2.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 
+// V3
+// IDRX/USDC		0.01%
+// USDC/USDT		0.01%
+// ETH/USDT		  0.05%
+// EURC/USDC		0.30%
+// ETH/EURC		  0.30%
+// DAI/USDC		  0.01%
+// ETH/DAI			0.05%
+// ETH/USDC		  0.05%
+
 contract Swappiness {
     address public owner;
     IUniversalRouter public immutable router;
@@ -82,14 +92,32 @@ contract Swappiness {
             payable(msg.sender).transfer(balanceAfter);
         }
     }
-}
 
-// V3
-// ETH/USDC		  0.05%
-// IDRX/USDC		0.01%
-// USDC/USDT		0.01%
-// ETH/USDT		  0.05%
-// EURC/USDC		0.30%
-// ETH/EURC		  0.30%
-// DAI/USDC		  0.01%
-// ETH/DAI			0.05%
+    function simpleMultiHopSwapExactOutput(uint256 amountOut) external payable {
+        if (msg.value == 0) revert("No ETH sent");
+        if (amountOut == 0) revert("AmountOut must be greater than zero");
+
+        bytes memory commands =
+            abi.encodePacked(bytes1(uint8(Commands.WRAP_ETH)), bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
+
+        uint256 amount = msg.value;
+        bytes memory path = abi.encodePacked(DAI_ADDRESS, uint24(100), USDC_ADDRESS, uint24(500), address(weth));
+
+        bytes[] memory inputs = new bytes[](2);
+        inputs[0] = abi.encode(address(this), amount);
+        inputs[1] = abi.encode(msg.sender, amountOut, msg.value, path, true);
+
+        uint256 deadline = block.timestamp + 15 * 60; // 15 minutes
+
+        try router.execute{value: amount}(commands, inputs, deadline) {
+            emit SwapCompleted(address(weth), DAI_ADDRESS, amountOut, msg.value);
+        } catch (bytes memory reason) {
+            emit Error(string(reason));
+        }
+
+        uint256 balanceAfter = address(this).balance;
+        if (balanceAfter > 0) {
+            payable(msg.sender).transfer(balanceAfter);
+        }
+    }
+}

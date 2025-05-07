@@ -141,4 +141,71 @@ describe("Swappiness", () => {
       console.log("Final USDC balance:", formatUnits(finalUsdcBalance, 6));
     });
   });
+
+  describe("SimpleMultiHopSwapExactOut", () => {
+    it("Should swap ETH for exact amount of DAI through USDC", async () => {
+      const { signers, swappiness, dai } = await loadFixture(
+        deploySwappinessFixture
+      );
+
+      // Store initial balances
+      const initialEthBalance = await ethers.provider.getBalance(
+        signers[0].address
+      );
+      const initialDaiBalance = await dai.balanceOf(signers[0].address);
+
+      // Define exact DAI output amount (10 DAI)
+      const exactDaiAmount = BigInt(10_000_000_000_000_000_000n); // 10 DAI with 18 decimals
+
+      // Send excess ETH to cover the swap (0.01 ETH)
+      const ethToSend = parseEther("0.06");
+
+      // Execute the multi-hop swap
+      const tx = await swappiness.simpleMultiHopSwapExactOutput(
+        exactDaiAmount,
+        {
+          value: ethToSend,
+        }
+      );
+      const receipt = await tx.wait();
+
+      if (!receipt) {
+        throw new Error("Transaction failed");
+      }
+
+      // Calculate gas cost
+      const gasUsed = receipt.gasUsed * receipt.gasPrice;
+
+      // Check balances after swap
+      const finalEthBalance = await ethers.provider.getBalance(
+        signers[0].address
+      );
+      const finalDaiBalance = await dai.balanceOf(signers[0].address);
+
+      // Calculate how much ETH was actually spent (excluding gas fees)
+      const ethSpent = initialEthBalance - finalEthBalance - gasUsed;
+
+      // Verify we received exactly the requested DAI amount
+      expect(finalDaiBalance).to.equal(initialDaiBalance + exactDaiAmount);
+
+      // Verify ETH spent is less than or equal to what we sent
+      expect(ethSpent).to.be.lte(ethToSend);
+
+      // Log details for analysis
+      console.log("--- Multi-hop Swap Results (ETH → USDC → DAI) ---");
+      console.log("Initial ETH balance:", formatUnits(initialEthBalance, 18));
+      console.log("Final ETH balance:", formatUnits(finalEthBalance, 18));
+      console.log("Maximum ETH amount:", formatUnits(ethToSend, 18));
+      console.log("Actual ETH spent:", formatUnits(ethSpent, 18));
+      console.log("Gas used (ETH):", formatUnits(gasUsed, 18));
+      console.log("Initial DAI balance:", formatUnits(initialDaiBalance, 18));
+      console.log("Final DAI balance:", formatUnits(finalDaiBalance, 18));
+
+      // Calculate and log exchange rate
+      const ethDaiRate =
+        Number(formatUnits(exactDaiAmount, 18)) /
+        Number(formatUnits(ethSpent, 18));
+      console.log("Effective ETH/DAI rate:", ethDaiRate.toFixed(2));
+    });
+  });
 });
