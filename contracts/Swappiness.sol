@@ -44,32 +44,95 @@ contract Swappiness {
         weth.approve(address(permit2), type(uint256).max);
     }
 
-    function simpleSwapExactOutput(uint256 amountOut) external payable {
-        if (msg.value == 0) revert("No ETH sent");
+    /**
+     * @notice Swaps an exact output amount of any token using either ETH or ERC20 as input
+     * @param tokenIn Address of the input token (use address(0) for ETH)
+     * @param tokenOut Address of the output token
+     * @param amountOut Exact amount of output tokens to receive
+     * @param amountInMaximum Maximum amount of input tokens to spend (or msg.value for ETH)
+     * @param poolFee The fee tier of the pool, in hundredths of a bip (e.g. 500 = 0.05%)
+     * @return amountIn The actual amount of input tokens used
+     */
+    function swapExactOutput(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountOut,
+        uint256 amountInMaximum,
+        uint24 poolFee
+    ) external payable returns (uint256 amountIn) {
         if (amountOut == 0) revert("AmountOut must be greater than zero");
 
-        bytes memory commands =
-            abi.encodePacked(bytes1(uint8(Commands.WRAP_ETH)), bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
+        // Determine if tokenIn is ETH (address(0))
+        bool isEthInput = tokenIn == address(0);
 
-        uint256 amount = msg.value;
-        bytes memory path = abi.encodePacked(USDC_ADDRESS, uint24(500), address(weth));
+        // Set tokenIn to weth address for path encoding if input is ETH
+        if (isEthInput) {
+            // Check that ETH was sent
+            if (msg.value == 0) revert("No ETH sent");
 
-        bytes[] memory inputs = new bytes[](2);
-        inputs[0] = abi.encode(address(this), amount);
-        inputs[1] = abi.encode(msg.sender, amountOut, msg.value, path, true);
+            // For ETH input, amountInMaximum must be msg.value
+            amountInMaximum = msg.value;
+            tokenIn = address(weth);
+        } else {
+            // For ERC20 inputs
+            if (amountInMaximum == 0) revert("AmountInMaximum must be greater than zero");
 
-        uint256 deadline = block.timestamp + 15 * 60; // 15 minutes
+            // Transfer ERC20 tokens from sender to this contract
+            IERC20(tokenIn).transferFrom(msg.sender, address(this), amountInMaximum);
 
-        try router.execute{value: amount}(commands, inputs, deadline) {
-            emit SwapCompleted(address(weth), USDC_ADDRESS, amountOut, msg.value);
+            // Approve tokens for Permit2
+            IERC20(tokenIn).approve(address(permit2), amountInMaximum);
+            permit2.approve(tokenIn, address(router), uint160(amountInMaximum), uint48(block.timestamp + 15 * 60));
+        }
+
+        // Encode the path for swapping
+        bytes memory path = abi.encodePacked(tokenOut, poolFee, tokenIn);
+
+        // Prepare the commands and inputs based on whether we're using ETH or ERC20
+        bytes memory commands;
+        bytes[] memory inputs;
+
+        if (isEthInput) {
+            // For ETH: wrap ETH then do exact output swap
+            commands = abi.encodePacked(bytes1(uint8(Commands.WRAP_ETH)), bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
+
+            inputs = new bytes[](2);
+            inputs[0] = abi.encode(address(this), amountInMaximum);
+            inputs[1] = abi.encode(msg.sender, amountOut, amountInMaximum, path, true);
+        } else {
+            // For ERC20: just do exact output swap
+            commands = abi.encodePacked(bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
+
+            inputs = new bytes[](1);
+            inputs[0] = abi.encode(
+                msg.sender, // recipient
+                amountOut, // exact amount out
+                amountInMaximum, // max amount in
+                path, // token path
+                true // use permit2
+            );
+        }
+
+        // Set deadline to 15 minutes from now
+        uint256 deadline = block.timestamp + 15 * 60;
+
+        // Execute the swap
+        try router.execute{value: isEthInput ? amountInMaximum : 0}(commands, inputs, deadline) {
+            emit SwapCompleted(tokenIn, tokenOut, amountOut, amountInMaximum);
+            amountIn = amountInMaximum; // This is an approximation; actual amount used may be less
         } catch (bytes memory reason) {
             emit Error(string(reason));
         }
 
-        uint256 balanceAfter = address(this).balance;
-        if (balanceAfter > 0) {
-            payable(msg.sender).transfer(balanceAfter);
+        // Return any remaining ETH to sender
+        if (isEthInput) {
+            uint256 balanceAfter = address(this).balance;
+            if (balanceAfter > 0) {
+                payable(msg.sender).transfer(balanceAfter);
+            }
         }
+
+        return amountIn;
     }
 
     function simpleMultiHopSwapExactOutput(uint256 amountOut) external payable {
@@ -97,311 +160,6 @@ contract Swappiness {
         uint256 balanceAfter = address(this).balance;
         if (balanceAfter > 0) {
             payable(msg.sender).transfer(balanceAfter);
-        }
-    }
-
-    /**
-     * @notice Swaps USDC for an exact amount of DAI using Uniswap V3.
-     * @dev Uses V3_SWAP_EXACT_OUT with DAI/USDC pool (0.01% fee).
-     * @param amountOut The exact amount of DAI to receive (18 decimals).
-     * @param amountInMaximum The maximum amount of USDC to spend (6 decimals).
-     */
-    function simpleSwapExactOutputUsdcToDai(uint256 amountOut, uint256 amountInMaximum) external {
-        if (amountOut == 0) revert("AmountOut must be greater than zero");
-        if (amountInMaximum == 0) revert("AmountInMaximum must be greater than zero");
-
-        // Transfer USDC from the sender to this contract
-        IERC20(USDC_ADDRESS).transferFrom(msg.sender, address(this), amountInMaximum);
-
-        // Ensure USDC approval for Permit2
-        IERC20(USDC_ADDRESS).approve(address(permit2), amountInMaximum);
-        permit2.approve(USDC_ADDRESS, address(router), uint160(amountInMaximum), uint48(block.timestamp + 15 * 60));
-
-        // Encode the command for V3_SWAP_EXACT_OUT
-        bytes memory commands = abi.encodePacked(bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
-
-        // Encode the path: DAI (output) -> 0.01% fee (100 bps) -> USDC (input)
-        bytes memory path = abi.encodePacked(
-            DAI_ADDRESS,
-            uint24(100), // 0.01% fee
-            USDC_ADDRESS
-        );
-
-        // Encode the input for the swap
-        bytes[] memory inputs = new bytes[](1);
-        inputs[0] = abi.encode(
-            msg.sender, // Recipient of DAI
-            amountOut, // Exact DAI amount to receive
-            amountInMaximum, // Max USDC to spend
-            path, // DAI -> USDC path
-            true // Payer is msg.sender (via Permit2)
-        );
-
-        // Set deadline to 15 minutes from now
-        uint256 deadline = block.timestamp + 15 * 60;
-
-        // Execute the swap
-        try router.execute(commands, inputs, deadline) {
-            emit SwapCompleted(USDC_ADDRESS, DAI_ADDRESS, amountOut, amountInMaximum);
-        } catch (bytes memory reason) {
-            emit Error(string(reason));
-        }
-    }
-
-    /**
-     * Helper function to create the correct swap path
-     * @param tokenIn Input token address
-     * @param tokenOut Output token address
-     * @return path The encoded swap path
-     */
-    function _createSwapPath(address tokenIn, address tokenOut) private view returns (bytes memory) {
-        // Direct paths from ETH/WETH
-        if (tokenIn == address(0) || tokenIn == address(weth)) {
-            if (tokenOut == USDC_ADDRESS) {
-                return abi.encodePacked(USDC_ADDRESS, uint24(500), address(weth));
-            } else if (tokenOut == DAI_ADDRESS) {
-                return abi.encodePacked(DAI_ADDRESS, uint24(500), address(weth));
-            } else if (tokenOut == EURC_ADDRESS) {
-                return abi.encodePacked(EURC_ADDRESS, uint24(3000), address(weth));
-            } else if (tokenOut == IDRX_ADDRESS) {
-                // Multi-hop: ETH -> USDC -> IDRX
-                return abi.encodePacked(IDRX_ADDRESS, uint24(100), USDC_ADDRESS, uint24(500), address(weth));
-            } else if (tokenOut == USDT_ADDRESS) {
-                return abi.encodePacked(USDT_ADDRESS, uint24(500), address(weth));
-            }
-        }
-        // Direct paths from USDC
-        else if (tokenIn == USDC_ADDRESS) {
-            if (tokenOut == DAI_ADDRESS) {
-                return abi.encodePacked(DAI_ADDRESS, uint24(100), USDC_ADDRESS);
-            } else if (tokenOut == IDRX_ADDRESS) {
-                return abi.encodePacked(IDRX_ADDRESS, uint24(100), USDC_ADDRESS);
-            } else if (tokenOut == EURC_ADDRESS) {
-                return abi.encodePacked(EURC_ADDRESS, uint24(3000), USDC_ADDRESS);
-            } else if (tokenOut == USDT_ADDRESS) {
-                return abi.encodePacked(USDT_ADDRESS, uint24(100), USDC_ADDRESS);
-            } else if (tokenOut == address(weth)) {
-                return abi.encodePacked(address(weth), uint24(500), USDC_ADDRESS);
-            }
-        }
-        // For other token inputs, route via ETH or USDC
-        else {
-            address intermediateToken;
-            uint24 fee1;
-            uint24 fee2;
-
-            // Determine best intermediate token and fees
-            (intermediateToken, fee1, fee2) = _getBestRoute(tokenIn, tokenOut);
-
-            // Build multi-hop path
-            return abi.encodePacked(tokenOut, fee2, intermediateToken, fee1, tokenIn);
-        }
-
-        // Default path through WETH if no specific path found
-        return abi.encodePacked(tokenOut, uint24(500), address(weth), uint24(500), tokenIn);
-    }
-
-    /**
-     * Helper function to determine the best route and fees
-     */
-    function _getBestRoute(address tokenIn, address tokenOut)
-        private
-        view
-        returns (address intermediateToken, uint24 fee1, uint24 fee2)
-    {
-        // Default route through ETH/WETH
-        intermediateToken = address(weth);
-        fee1 = 500; // Default fee
-        fee2 = 500; // Default fee
-
-        // Determine best intermediate token and fees
-        if (tokenIn == DAI_ADDRESS) {
-            if (tokenOut == USDC_ADDRESS || tokenOut == IDRX_ADDRESS || tokenOut == USDT_ADDRESS) {
-                // DAI -> USDC -> Other
-                intermediateToken = USDC_ADDRESS;
-                fee1 = 100; // DAI/USDC fee
-            }
-        } else if (tokenIn == EURC_ADDRESS && tokenOut == USDC_ADDRESS) {
-            fee1 = 3000; // EURC/USDC fee
-        } else if (
-            tokenIn == IDRX_ADDRESS && (tokenOut == USDC_ADDRESS || tokenOut == DAI_ADDRESS || tokenOut == USDT_ADDRESS)
-        ) {
-            intermediateToken = USDC_ADDRESS;
-            fee1 = 100; // IDRX/USDC fee
-        }
-
-        // Set fee2 based on intermediate token and destination
-        if (intermediateToken == USDC_ADDRESS) {
-            if (tokenOut == DAI_ADDRESS || tokenOut == IDRX_ADDRESS || tokenOut == USDT_ADDRESS) {
-                fee2 = 100;
-            } else if (tokenOut == EURC_ADDRESS) {
-                fee2 = 3000;
-            } else if (tokenOut == address(weth)) {
-                fee2 = 500;
-            }
-        } else {
-            // If intermediate is ETH/WETH
-            if (tokenOut == USDC_ADDRESS || tokenOut == DAI_ADDRESS || tokenOut == USDT_ADDRESS) {
-                fee2 = 500;
-            } else if (tokenOut == EURC_ADDRESS) {
-                fee2 = 3000;
-            }
-        }
-
-        return (intermediateToken, fee1, fee2);
-    }
-
-    /**
-     * @dev Disperses a single token to multiple recipients as different stablecoins
-     * @param tokenIn Address of the input token (use address(0) for ETH)
-     * @param recipients Array of recipient addresses
-     * @param tokenOut Array of output token addresses (stablecoins to send)
-     * @param amountOut Array of output amounts
-     * @param amountInMax Array of maximum input amounts willing to spend
-     */
-    function disperseToStablecoins(
-        address tokenIn,
-        address[] calldata recipients,
-        address[] calldata tokenOut,
-        uint256[] calldata amountOut,
-        uint256[] calldata amountInMax
-    ) external payable {
-        // Validate input parameters
-        uint256 numSwaps = tokenOut.length;
-        require(numSwaps > 0, "No swaps specified");
-        require(numSwaps == amountOut.length, "Length mismatch: tokenOut/amountOut");
-        require(numSwaps == amountInMax.length, "Length mismatch: tokenOut/amountInMax");
-        require(numSwaps == recipients.length, "Length mismatch: tokenOut/recipients");
-
-        // Handle ETH as input token
-        bool isETHInput = tokenIn == address(0);
-
-        _handleTokenTransfer(tokenIn, numSwaps, amountInMax, isETHInput);
-
-        // Process swaps
-        (bytes memory finalCommands, bytes[] memory finalInputs) =
-            _prepareSwaps(tokenIn, recipients, tokenOut, amountOut, amountInMax, numSwaps, isETHInput);
-
-        uint256 deadline = block.timestamp + 15 * 60; // 15 minutes
-
-        // Execute all swaps via the router
-        try router.execute{value: isETHInput ? msg.value : 0}(finalCommands, finalInputs, deadline) {
-            emit DispersedToStablecoins(
-                isETHInput ? address(weth) : tokenIn, isETHInput ? msg.value : _calculateTotalAmountIn(amountInMax)
-            );
-        } catch (bytes memory reason) {
-            emit Error(string(reason));
-        }
-
-        _returnUnusedFunds(tokenIn, isETHInput);
-    }
-
-    /**
-     * Helper to calculate total amount in
-     */
-    function _calculateTotalAmountIn(uint256[] calldata amountInMax) private pure returns (uint256 totalAmountIn) {
-        for (uint256 i = 0; i < amountInMax.length; i++) {
-            totalAmountIn += amountInMax[i];
-        }
-        return totalAmountIn;
-    }
-
-    /**
-     * Helper to handle token transfers before swaps
-     */
-    function _handleTokenTransfer(address tokenIn, uint256, uint256[] calldata amountInMax, bool isETHInput) private {
-        if (!isETHInput) {
-            // For ERC20 tokens, transfer them to this contract first
-            uint256 totalAmountIn = _calculateTotalAmountIn(amountInMax);
-
-            // Transfer USDC from the sender to this contract
-            IERC20(tokenIn).transferFrom(msg.sender, address(this), totalAmountIn);
-
-            // Ensure USDC approval for Permit2
-            IERC20(tokenIn).approve(address(permit2), totalAmountIn);
-            permit2.approve(tokenIn, address(router), uint160(totalAmountIn), uint48(block.timestamp + 15 * 60));
-        }
-    }
-
-    /**
-     * Helper to prepare swap commands and inputs
-     */
-    function _prepareSwaps(
-        address tokenIn,
-        address[] calldata recipients,
-        address[] calldata tokenOut,
-        uint256[] calldata amountOut,
-        uint256[] calldata amountInMax,
-        uint256 numSwaps,
-        bool isETHInput
-    ) private returns (bytes memory finalCommands, bytes[] memory finalInputs) {
-        // Prepare dynamic arrays for commands and inputs
-        bytes memory commands = new bytes(numSwaps * 2); // Each swap needs up to 2 commands (wrap + swap)
-        bytes[] memory inputs = new bytes[](numSwaps * 2);
-
-        uint256 commandIdx = 0;
-        uint256 inputIdx = 0;
-
-        // If using ETH as input, first command is to wrap it
-        if (isETHInput) {
-            commands[commandIdx++] = bytes1(uint8(Commands.WRAP_ETH));
-            inputs[inputIdx++] = abi.encode(address(this), msg.value);
-        }
-
-        // Process each swap
-        for (uint256 i = 0; i < numSwaps; i++) {
-            address currentTokenOut = tokenOut[i];
-            uint256 currentAmountOut = amountOut[i];
-            address recipient = recipients[i];
-
-            // Skip if token out is same as token in (just transfer directly)
-            if (currentTokenOut == tokenIn) {
-                if (isETHInput) {
-                    payable(recipient).transfer(currentAmountOut);
-                } else {
-                    IERC20(tokenIn).transfer(recipient, currentAmountOut);
-                }
-                continue;
-            }
-
-            // Determine optimal swap path based on token pair
-            bytes memory path = _createSwapPath(tokenIn, currentTokenOut);
-
-            // Add the swap command
-            commands[commandIdx++] = bytes1(uint8(Commands.V3_SWAP_EXACT_OUT));
-            inputs[inputIdx++] = abi.encode(recipient, currentAmountOut, amountInMax[i], path, isETHInput);
-        }
-
-        // Trim commands and inputs arrays to actual size
-        finalCommands = new bytes(commandIdx);
-        for (uint256 i = 0; i < commandIdx; i++) {
-            finalCommands[i] = commands[i];
-        }
-
-        finalInputs = new bytes[](inputIdx);
-        for (uint256 i = 0; i < inputIdx; i++) {
-            finalInputs[i] = inputs[i];
-        }
-
-        return (finalCommands, finalInputs);
-    }
-
-    /**
-     * Helper to return any unused funds
-     */
-    function _returnUnusedFunds(address tokenIn, bool isETHInput) private {
-        // Return any unused ETH to the sender
-        uint256 ethBalance = address(this).balance;
-        if (ethBalance > 0) {
-            payable(msg.sender).transfer(ethBalance);
-        }
-
-        // Return any unused input tokens
-        if (!isETHInput) {
-            uint256 remainingTokens = IERC20(tokenIn).balanceOf(address(this));
-            if (remainingTokens > 0) {
-                IERC20(tokenIn).transfer(msg.sender, remainingTokens);
-            }
         }
     }
 }
