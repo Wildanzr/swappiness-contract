@@ -162,4 +162,84 @@ contract Swappiness {
             payable(msg.sender).transfer(balanceAfter);
         }
     }
+
+    function disperseToStablecoins(
+        address tokenIn,
+        address[] calldata recipients,
+        address[] calldata tokenOut,
+        uint256[] calldata amountOut,
+        uint256[] calldata amountInMax,
+        bytes[] calldata paths
+    ) external payable {
+        // Validate all inputs upfront
+        uint256 swapCount = recipients.length;
+        if (swapCount == 0) revert("No recipients specified");
+        if (
+            tokenOut.length != swapCount || amountOut.length != swapCount || amountInMax.length != swapCount
+                || paths.length != swapCount
+        ) {
+            revert("Array length mismatch");
+        }
+
+        bool isEthInput = tokenIn == address(0);
+        uint256 totalAmountInMax = 0;
+
+        // Validate amounts and calculate total required
+        for (uint256 i = 0; i < swapCount; i++) {
+            if (amountOut[i] == 0) revert("AmountOut must be greater than zero");
+            if (amountInMax[i] == 0) revert("AmountInMax must be greater than zero");
+            totalAmountInMax += amountInMax[i];
+        }
+
+        // ETH input validation
+        if (isEthInput) {
+            if (msg.value == 0) revert("No ETH sent");
+            if (totalAmountInMax > msg.value) revert("Total amountInMax exceeds msg.value");
+            tokenIn = address(weth); // Set tokenIn to weth for paths
+        } else {
+            // ERC20 input validation & transfer
+            IERC20(tokenIn).transferFrom(msg.sender, address(this), totalAmountInMax);
+            IERC20(tokenIn).approve(address(permit2), totalAmountInMax);
+            permit2.approve(tokenIn, address(router), uint160(totalAmountInMax), uint48(block.timestamp + 15 * 60));
+        }
+
+        uint256 deadline = block.timestamp + 15 * 60; // 15 minutes
+        uint256 totalUsed = 0;
+
+        // Process each swap
+        for (uint256 i = 0; i < swapCount; i++) {
+            bytes memory commands;
+            bytes[] memory inputs;
+            uint256 ethValue = 0;
+
+            if (isEthInput) {
+                commands = abi.encodePacked(bytes1(uint8(Commands.WRAP_ETH)), bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
+                inputs = new bytes[](2);
+                inputs[0] = abi.encode(address(this), amountInMax[i]);
+                inputs[1] = abi.encode(recipients[i], amountOut[i], amountInMax[i], paths[i], true);
+                ethValue = amountInMax[i];
+            } else {
+                commands = abi.encodePacked(bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
+                inputs = new bytes[](1);
+                inputs[0] = abi.encode(recipients[i], amountOut[i], amountInMax[i], paths[i], true);
+            }
+
+            try router.execute{value: ethValue}(commands, inputs, deadline) {
+                emit SwapCompleted(isEthInput ? address(0) : tokenIn, tokenOut[i], amountOut[i], amountInMax[i]);
+                totalUsed += amountInMax[i];
+            } catch (bytes memory reason) {
+                emit Error(string(reason));
+            }
+        }
+
+        // Return any remaining ETH to sender
+        if (isEthInput) {
+            uint256 balanceAfter = address(this).balance;
+            if (balanceAfter > 0) {
+                payable(msg.sender).transfer(balanceAfter);
+            }
+        }
+
+        emit DispersedToStablecoins(isEthInput ? address(0) : tokenIn, totalUsed);
+    }
 }

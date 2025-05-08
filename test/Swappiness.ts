@@ -398,139 +398,294 @@ describe("Swappiness", () => {
           Number(formatUnits(exactEthAmount, 18))
       );
     });
+  });
 
-    // it("Should swap exact from USDC to ETH", async () => {
-    //   const { signers, swappiness, usdc } = await loadFixture(
-    //     deploySwappinessFixture
-    //   );
+  describe("disperseToStablecoins", async () => {
+    it("Should disperse ETH to multiple stablecoins (USDC and DAI) to different recipients", async () => {
+      const { signers, swappiness, usdc, dai } = await loadFixture(
+        deploySwappinessFixture
+      );
 
-    //   // Need to acquire some USDC first via ETH->USDC swap
-    //   // First get some USDC by swapping ETH
-    //   const seedUsdcAmount = parseUnits("1000", 6); // Get 100 USDC to start with
-    //   const seedEthAmount = parseEther("1");
+      // Use different signers as recipients
+      const recipient1 = signers[5];
+      const recipient2 = signers[7];
 
-    //   // Store initial balances
-    //   let initialUsdcBalance = await usdc.balanceOf(signers[0].address);
-    //   let initialEthBalance = await ethers.provider.getBalance(
-    //     signers[0].address
-    //   );
+      // Store initial balances
+      const initialEthBalance = await ethers.provider.getBalance(
+        signers[0].address
+      );
+      const initialUsdcBalance1 = await usdc.balanceOf(recipient1.address);
+      const initialDaiBalance2 = await dai.balanceOf(recipient2.address);
 
-    //   console.log("Initial USDC balance:", formatUnits(initialUsdcBalance, 6));
-    //   console.log("Initial ETH balance:", formatUnits(initialEthBalance, 18));
+      // Define exact output amounts
+      const exactUsdcAmount = parseUnits("10", 6); // 10 USDC
+      const exactDaiAmount = parseUnits("15", 18); // 15 DAI
 
-    //   await swappiness.swapExactOutput(
-    //     ethers.ZeroAddress, // ETH input
-    //     USDC,
-    //     seedUsdcAmount,
-    //     seedEthAmount,
-    //     500, // 0.05% pool fee
-    //     {
-    //       value: seedEthAmount,
-    //     }
-    //   );
-    //   await swappiness.swapExactOutput(
-    //     ethers.ZeroAddress, // ETH input
-    //     USDC,
-    //     seedUsdcAmount,
-    //     seedEthAmount,
-    //     500, // 0.05% pool fee
-    //     {
-    //       value: seedEthAmount,
-    //     }
-    //   );
-    //   await swappiness.swapExactOutput(
-    //     ethers.ZeroAddress, // ETH input
-    //     USDC,
-    //     seedUsdcAmount,
-    //     seedEthAmount,
-    //     500, // 0.05% pool fee
-    //     {
-    //       value: seedEthAmount,
-    //     }
-    //   );
-    //   await swappiness.swapExactOutput(
-    //     ethers.ZeroAddress, // ETH input
-    //     USDC,
-    //     seedUsdcAmount,
-    //     seedEthAmount,
-    //     500, // 0.05% pool fee
-    //     {
-    //       value: seedEthAmount,
-    //     }
-    //   );
-    //   await swappiness.swapExactOutput(
-    //     ethers.ZeroAddress, // ETH input
-    //     USDC,
-    //     seedUsdcAmount,
-    //     seedEthAmount,
-    //     500, // 0.05% pool fee
-    //     {
-    //       value: seedEthAmount,
-    //     }
-    //   );
+      // Maximum ETH to spend for each swap
+      const ethForUsdc = parseEther("0.008"); // 0.008 ETH max for USDC
+      const ethForDai = parseEther("0.012"); // 0.012 ETH max for DAI
+      const totalEthToSend = ethForUsdc + ethForDai;
 
-    //   initialUsdcBalance = await usdc.balanceOf(signers[0].address);
-    //   initialEthBalance = await ethers.provider.getBalance(signers[0].address);
+      // Create paths for each swap
+      // For ETH -> USDC: tokenOut + fee + tokenIn
+      const pathToUsdc = ethers.solidityPacked(
+        ["address", "uint24", "address"],
+        [USDC, 500, WETH] // 0.05% fee
+      );
 
-    //   console.log("After seeding USDC", formatUnits(initialUsdcBalance, 6));
-    //   console.log("After seeding ETH", formatUnits(initialEthBalance, 18));
+      // For ETH -> DAI: tokenOut + fee + tokenIn
+      const pathToDai = ethers.solidityPacked(
+        ["address", "uint24", "address"],
+        [DAI, 500, WETH] // 0.05% fee
+      );
 
-    //   // Ensure we have enough USDC
-    //   expect(initialUsdcBalance).to.be.gte(seedUsdcAmount);
+      // Execute the disperseToStablecoins with different recipients
+      const tx = await swappiness.disperseToStablecoins(
+        ethers.ZeroAddress, // ETH input
+        [recipient1.address, recipient2.address], // different recipients
+        [USDC, DAI], // output tokens
+        [exactUsdcAmount, exactDaiAmount], // exact output amounts
+        [ethForUsdc, ethForDai], // max input amounts
+        [pathToUsdc, pathToDai], // paths
+        {
+          value: totalEthToSend,
+        }
+      );
 
-    //   // Define exact ETH output amount (1 ETH)
-    //   const exactEthAmount = parseEther("1");
+      const receipt = await tx.wait();
+      if (!receipt) {
+        throw new Error("Transaction failed");
+      }
 
-    //   // Approve USDC for the contract to spend
-    //   await usdc.approve(await swappiness.getAddress(), initialUsdcBalance);
+      // Calculate gas cost
+      const gasUsed = receipt.gasUsed * receipt.gasPrice;
 
-    //   // Maximum USDC to spend
-    //   const usdcToSpend = parseUnits("2500", 6); // 10 USDC
+      // Check balances after swap
+      const finalEthBalance = await ethers.provider.getBalance(
+        signers[0].address
+      );
+      const finalUsdcBalance1 = await usdc.balanceOf(recipient1.address);
+      const finalDaiBalance2 = await dai.balanceOf(recipient2.address);
 
-    //   // Pool fee for USDC/ETH is 0.05% = 500
-    //   const poolFee = 500;
+      // Calculate how much ETH was actually spent (excluding gas fees)
+      const ethSpent = initialEthBalance - finalEthBalance - gasUsed;
 
-    //   // Execute the swap
-    //   const tx = await swappiness.swapExactOutput(
-    //     USDC,
-    //     ethers.ZeroAddress, // ETH output (address(0))
-    //     exactEthAmount,
-    //     usdcToSpend,
-    //     poolFee
-    //   );
-    //   const receipt = await tx.wait();
+      // Verify recipients received exactly the requested token amounts
+      expect(finalUsdcBalance1).to.equal(initialUsdcBalance1 + exactUsdcAmount);
+      expect(finalDaiBalance2).to.equal(initialDaiBalance2 + exactDaiAmount);
 
-    //   if (!receipt) {
-    //     throw new Error("Transaction failed");
-    //   }
+      // Verify ETH spent is less than or equal to what we sent
+      expect(ethSpent).to.be.lte(totalEthToSend);
 
-    //   // Check balance after swap
-    //   const finalUsdcBalance = await usdc.balanceOf(signers[0].address);
-    //   const finalEthBalance = await ethers.provider.getBalance(
-    //     signers[0].address
-    //   );
+      // Log details
+      console.log("--- ETH to Multiple Recipients Disperse Results ---");
+      console.log("Initial ETH balance:", formatUnits(initialEthBalance, 18));
+      console.log("Final ETH balance:", formatUnits(finalEthBalance, 18));
+      console.log("Total ETH sent:", formatUnits(totalEthToSend, 18));
+      console.log("Actual ETH spent:", formatUnits(ethSpent, 18));
+      console.log("Gas used (ETH):", formatUnits(gasUsed, 18));
+      console.log(
+        `USDC received by recipient1 (${recipient1.address}):`,
+        formatUnits(exactUsdcAmount, 6)
+      );
+      console.log(
+        `DAI received by recipient2 (${recipient2.address}):`,
+        formatUnits(exactDaiAmount, 18)
+      );
+    });
 
-    //   // Calculate how much USDC was actually spent
-    //   const usdcSpent = initialUsdcBalance - finalUsdcBalance;
+    it("Should disperse USDC to multiple tokens (DAI and WETH) to different recipients", async () => {
+      const { signers, swappiness, usdc, dai, weth } = await loadFixture(
+        deploySwappinessFixture
+      );
 
-    //   // Verify USDC spent is less than or equal to maximum
-    //   // expect(usdcSpent).to.be.lte(usdcToSpend);
-    //   // Log details for analysis
-    //   console.log("--- USDC to ETH Swap Results ---");
-    //   console.log("Initial USDC balance:", formatUnits(initialUsdcBalance, 6));
-    //   console.log("Final USDC balance:", formatUnits(finalUsdcBalance, 6));
-    //   console.log("USDC spent:", formatUnits(usdcSpent, 6));
-    //   console.log("Initial ETH balance:", formatUnits(initialEthBalance, 18));
-    //   console.log("Final ETH balance:", formatUnits(finalEthBalance, 18));
-    //   console.log(
-    //     "Difference in ETH balance:",
-    //     formatUnits(initialEthBalance - finalEthBalance, 18)
-    //   );
-    //   console.log(
-    //     "Effective USDC/ETH rate:",
-    //     Number(formatUnits(usdcSpent, 6)) /
-    //       Number(formatUnits(exactEthAmount, 18))
-    //   );
-    // });
+      // Use different signers as recipients
+      const recipient1 = signers[5];
+      const recipient2 = signers[7];
+
+      // First get some USDC by swapping ETH
+      const seedUsdcAmount = parseUnits("100", 6); // Get 100 USDC to start with
+      const seedEthAmount = parseEther("0.06");
+
+      await swappiness.swapExactOutput(
+        ethers.ZeroAddress, // ETH input
+        USDC,
+        seedUsdcAmount,
+        seedEthAmount,
+        500, // 0.05% pool fee
+        {
+          value: seedEthAmount,
+        }
+      );
+
+      // Store initial balances
+      const initialUsdcBalance = await usdc.balanceOf(signers[0].address);
+      const initialDaiBalance1 = await dai.balanceOf(recipient1.address);
+      const initialWethBalance2 = await weth.balanceOf(recipient2.address);
+
+      // Ensure we have enough USDC
+      expect(initialUsdcBalance).to.be.gte(seedUsdcAmount);
+
+      // Define exact output amounts
+      const exactDaiAmount = parseUnits("15", 18); // 15 DAI
+      const exactWethAmount = parseEther("0.005"); // 0.005 WETH
+
+      // Maximum USDC to spend for each swap
+      const usdcForDai = parseUnits("16", 6); // 16 USDC max for DAI
+      const usdcForWeth = parseUnits("10", 6); // 10 USDC max for WETH
+      const totalUsdcToSpend = usdcForDai + usdcForWeth;
+
+      // Approve USDC for the contract to spend
+      await usdc.approve(await swappiness.getAddress(), totalUsdcToSpend);
+
+      // Create paths for each swap
+      // For USDC -> DAI: tokenOut + fee + tokenIn
+      const pathToDai = ethers.solidityPacked(
+        ["address", "uint24", "address"],
+        [DAI, 100, USDC] // 0.01% fee
+      );
+
+      // For USDC -> WETH: tokenOut + fee + tokenIn
+      const pathToWeth = ethers.solidityPacked(
+        ["address", "uint24", "address"],
+        [WETH, 500, USDC] // 0.05% fee
+      );
+
+      // Execute the disperseToStablecoins with different recipients
+      const tx = await swappiness.disperseToStablecoins(
+        USDC, // USDC input
+        [recipient1.address, recipient2.address], // different recipients
+        [DAI, WETH], // output tokens
+        [exactDaiAmount, exactWethAmount], // exact output amounts
+        [usdcForDai, usdcForWeth], // max input amounts
+        [pathToDai, pathToWeth] // paths
+      );
+
+      const receipt = await tx.wait();
+      if (!receipt) {
+        throw new Error("Transaction failed");
+      }
+
+      // Check balances after swap
+      const finalUsdcBalance = await usdc.balanceOf(signers[0].address);
+      const finalDaiBalance1 = await dai.balanceOf(recipient1.address);
+      const finalWethBalance2 = await weth.balanceOf(recipient2.address);
+
+      // Calculate how much USDC was actually spent
+      const usdcSpent = initialUsdcBalance - finalUsdcBalance;
+
+      // Verify recipients received exactly the requested token amounts
+      expect(finalDaiBalance1).to.equal(initialDaiBalance1 + exactDaiAmount);
+      expect(finalWethBalance2).to.equal(initialWethBalance2 + exactWethAmount);
+
+      // Verify USDC spent is less than or equal to maximum
+      expect(usdcSpent).to.be.lte(totalUsdcToSpend);
+
+      // Log details
+      console.log("--- USDC to Multiple Recipients Disperse Results ---");
+      console.log("Initial USDC balance:", formatUnits(initialUsdcBalance, 6));
+      console.log("Final USDC balance:", formatUnits(finalUsdcBalance, 6));
+      console.log("USDC spent:", formatUnits(usdcSpent, 6));
+      console.log(
+        `DAI received by recipient1 (${recipient1.address}):`,
+        formatUnits(exactDaiAmount, 18)
+      );
+      console.log(
+        `WETH received by recipient2 (${recipient2.address}):`,
+        formatUnits(exactWethAmount, 18)
+      );
+    });
+
+    it("Should disperse ETH to DAI using multi-hop path through USDC to a different recipient", async () => {
+      const { signers, swappiness, dai } = await loadFixture(
+        deploySwappinessFixture
+      );
+
+      // Use a different signer as recipient
+      const recipient = signers[5];
+
+      // Store initial balances
+      const initialEthBalance = await ethers.provider.getBalance(
+        signers[0].address
+      );
+      const initialDaiBalance = await dai.balanceOf(recipient.address);
+
+      // Define exact DAI output amount
+      const exactDaiAmount = parseUnits("20", 18); // 20 DAI
+
+      // Maximum ETH to spend
+      const maxEthToSpend = parseEther("0.015"); // 0.015 ETH
+
+      // Create multi-hop path: ETH -> USDC -> DAI
+      // Path is encoded in reverse: DAI -> USDC -> WETH
+      const multiHopPath = ethers.solidityPacked(
+        ["address", "uint24", "address", "uint24", "address"],
+        [DAI, 100, USDC, 500, WETH] // DAI -0.01%-> USDC -0.05%-> WETH
+      );
+
+      // Execute the disperseToStablecoins with a multi-hop path
+      const tx = await swappiness.disperseToStablecoins(
+        ethers.ZeroAddress, // ETH input
+        [recipient.address], // different recipient
+        [DAI], // output token
+        [exactDaiAmount], // exact output amount
+        [maxEthToSpend], // max input amount
+        [multiHopPath], // multi-hop path
+        {
+          value: maxEthToSpend,
+        }
+      );
+
+      const receipt = await tx.wait();
+      if (!receipt) {
+        throw new Error("Transaction failed");
+      }
+
+      // Calculate gas cost
+      const gasUsed = receipt.gasUsed * receipt.gasPrice;
+
+      // Check balances after swap
+      const finalEthBalance = await ethers.provider.getBalance(
+        signers[0].address
+      );
+      const finalDaiBalance = await dai.balanceOf(recipient.address);
+
+      // Calculate how much ETH was actually spent (excluding gas fees)
+      const ethSpent = initialEthBalance - finalEthBalance - gasUsed;
+
+      // Verify recipient received exactly the requested DAI amount
+      expect(finalDaiBalance).to.equal(initialDaiBalance + exactDaiAmount);
+
+      // Verify ETH spent is less than or equal to max
+      expect(ethSpent).to.be.lte(maxEthToSpend);
+
+      // Log details
+      console.log(
+        "--- ETH to DAI Multi-Hop to Different Recipient Results ---"
+      );
+      console.log("Initial ETH balance:", formatUnits(initialEthBalance, 18));
+      console.log("Final ETH balance:", formatUnits(finalEthBalance, 18));
+      console.log("Maximum ETH amount:", formatUnits(maxEthToSpend, 18));
+      console.log("Actual ETH spent:", formatUnits(ethSpent, 18));
+      console.log("Gas used (ETH):", formatUnits(gasUsed, 18));
+      console.log(
+        `Initial DAI balance of recipient (${recipient.address}):`,
+        formatUnits(initialDaiBalance, 18)
+      );
+      console.log(
+        `Final DAI balance of recipient (${recipient.address}):`,
+        formatUnits(finalDaiBalance, 18)
+      );
+      console.log(
+        `DAI received by recipient:`,
+        formatUnits(exactDaiAmount, 18)
+      );
+
+      // Calculate and log effective exchange rate
+      const ethDaiRate =
+        Number(formatUnits(exactDaiAmount, 18)) /
+        Number(formatUnits(ethSpent, 18));
+      console.log("Effective ETH/DAI rate:", ethDaiRate.toFixed(2));
+    });
   });
 });
