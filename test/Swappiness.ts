@@ -1,7 +1,7 @@
 import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { expect } from "chai";
 import hre, { ethers } from "hardhat";
-import { formatUnits, parseEther } from "ethers";
+import { formatUnits, parseEther, parseUnits } from "ethers";
 
 import { IERC20, IWETH } from "../typechain-types/contracts/interfaces";
 
@@ -140,6 +140,72 @@ describe("Swappiness", () => {
       );
       console.log("Gas used (ETH):", formatUnits(gasUsed, 18));
       console.log("Final USDC balance:", formatUnits(finalUsdcBalance, 6));
+    });
+  });
+
+  describe("SimpleSwapUSDCExactOut", () => {
+    it("Should swap USDC for exact amount of DAI", async () => {
+      const { swappiness, signers, usdc, dai } = await loadFixture(
+        deploySwappinessFixture
+      );
+      let initialUsdcBalance = await usdc.balanceOf(signers[0].address);
+      let initialDaiBalance = await dai.balanceOf(signers[0].address);
+
+      // Get USDC by swapping ETH using simpleSwapExactOutput
+      const usdcAmount = parseUnits("1000", 6); // 1000 USDC
+      const ethToSend = parseEther("1"); // Send enough ETH to cover the swap
+
+      // Execute the swap to get USDC
+      await swappiness.simpleSwapExactOutput(usdcAmount, {
+        value: ethToSend,
+      });
+
+      const afterSwapUsdcBalance = await usdc.balanceOf(signers[0].address);
+      expect(afterSwapUsdcBalance).to.be.equal(initialUsdcBalance + usdcAmount);
+
+      // Approve Swappiness to spend USDC
+      const amountInMaximum = parseUnits("15", 6); // 15 USDC (slight buffer for price impact)
+      await usdc
+        .connect(signers[0])
+        .approve(swappiness.target, amountInMaximum);
+
+      // Make sure the approval was successful
+      const allowance = await usdc.allowance(
+        signers[0].address,
+        swappiness.target
+      );
+      expect(allowance).to.equal(amountInMaximum);
+
+      // Store initial balances
+      initialUsdcBalance = await usdc.balanceOf(signers[0].address);
+      initialDaiBalance = await dai.balanceOf(signers[0].address);
+      const exactDaiAmount = parseUnits("10", 18); // 10 DAI
+      const usdcToSend = parseUnits("15", 6); // 15 USDC
+      const tx = await swappiness.simpleSwapExactOutputUsdcToDai(
+        exactDaiAmount,
+        usdcToSend
+      );
+
+      const receipt = await tx.wait();
+      if (!receipt) {
+        throw new Error("Transaction failed");
+      }
+      const gasUsed = receipt.gasUsed * receipt.gasPrice;
+      const finalUsdcBalance = await usdc.balanceOf(signers[0].address);
+      const finalDaiBalance = await dai.balanceOf(signers[0].address);
+      const usdcSpent = initialUsdcBalance - finalUsdcBalance - gasUsed;
+      expect(finalDaiBalance).to.equal(initialDaiBalance + exactDaiAmount);
+      expect(usdcSpent).to.be.lte(usdcToSend);
+      console.log("Initial USDC balance:", formatUnits(initialUsdcBalance, 6));
+      console.log("Final USDC balance:", formatUnits(finalUsdcBalance, 6));
+      console.log("Maximum USDC amount:", formatUnits(usdcToSend, 6));
+      console.log(
+        "Actual USDC spent:",
+        formatUnits(initialUsdcBalance - finalUsdcBalance)
+      );
+      console.log("Initial DAI balance:", formatUnits(initialDaiBalance, 18));
+      console.log("Final DAI balance:", formatUnits(finalDaiBalance, 18));
+      console.log("Exact DAI amount:", formatUnits(exactDaiAmount, 18));
     });
   });
 

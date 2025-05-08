@@ -101,6 +101,54 @@ contract Swappiness {
     }
 
     /**
+     * @notice Swaps USDC for an exact amount of DAI using Uniswap V3.
+     * @dev Uses V3_SWAP_EXACT_OUT with DAI/USDC pool (0.01% fee).
+     * @param amountOut The exact amount of DAI to receive (18 decimals).
+     * @param amountInMaximum The maximum amount of USDC to spend (6 decimals).
+     */
+    function simpleSwapExactOutputUsdcToDai(uint256 amountOut, uint256 amountInMaximum) external {
+        if (amountOut == 0) revert("AmountOut must be greater than zero");
+        if (amountInMaximum == 0) revert("AmountInMaximum must be greater than zero");
+
+        // Transfer USDC from the sender to this contract
+        IERC20(USDC_ADDRESS).transferFrom(msg.sender, address(this), amountInMaximum);
+
+        // Ensure USDC approval for Permit2
+        IERC20(USDC_ADDRESS).approve(address(permit2), amountInMaximum);
+        permit2.approve(USDC_ADDRESS, address(router), uint160(amountInMaximum), uint48(block.timestamp + 15 * 60));
+
+        // Encode the command for V3_SWAP_EXACT_OUT
+        bytes memory commands = abi.encodePacked(bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
+
+        // Encode the path: DAI (output) -> 0.01% fee (100 bps) -> USDC (input)
+        bytes memory path = abi.encodePacked(
+            DAI_ADDRESS,
+            uint24(100), // 0.01% fee
+            USDC_ADDRESS
+        );
+
+        // Encode the input for the swap
+        bytes[] memory inputs = new bytes[](1);
+        inputs[0] = abi.encode(
+            msg.sender, // Recipient of DAI
+            amountOut, // Exact DAI amount to receive
+            amountInMaximum, // Max USDC to spend
+            path, // DAI -> USDC path
+            true // Payer is msg.sender (via Permit2)
+        );
+
+        // Set deadline to 15 minutes from now
+        uint256 deadline = block.timestamp + 15 * 60;
+
+        // Execute the swap
+        try router.execute(commands, inputs, deadline) {
+            emit SwapCompleted(USDC_ADDRESS, DAI_ADDRESS, amountOut, amountInMaximum);
+        } catch (bytes memory reason) {
+            emit Error(string(reason));
+        }
+    }
+
+    /**
      * Helper function to create the correct swap path
      * @param tokenIn Input token address
      * @param tokenOut Output token address
@@ -266,11 +314,12 @@ contract Swappiness {
             // For ERC20 tokens, transfer them to this contract first
             uint256 totalAmountIn = _calculateTotalAmountIn(amountInMax);
 
-            // Transfer tokens to this contract
+            // Transfer USDC from the sender to this contract
             IERC20(tokenIn).transferFrom(msg.sender, address(this), totalAmountIn);
 
-            // Approve router to use these tokens
-            IERC20(tokenIn).approve(address(router), totalAmountIn);
+            // Ensure USDC approval for Permit2
+            IERC20(tokenIn).approve(address(permit2), totalAmountIn);
+            permit2.approve(tokenIn, address(router), uint160(totalAmountIn), uint48(block.timestamp + 15 * 60));
         }
     }
 
