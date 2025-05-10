@@ -12,12 +12,12 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "hardhat": "^2.23.0"
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0"
   },
   "dependencies": {
     "@uniswap/v3-core": "^1.0.1",
     "@uniswap/v3-periphery": "^1.4.1",
+    "hardhat": "^2.24.0",
     "rimraf": "^6.0.1"
   }
 }

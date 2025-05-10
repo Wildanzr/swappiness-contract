@@ -2,6 +2,8 @@ import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
 import { vars } from "hardhat/config";
 
+import "./task/swap";
+
 const mnemonic: string = vars.get("MNEMONIC");
 const config: HardhatUserConfig = {
   solidity: {
@@ -15,6 +17,13 @@ const config: HardhatUserConfig = {
     },
   },
   networks: {
+    base: {
+      url: "https://base-mainnet.g.alchemy.com/v2/ZlzkGJhwX4ik8IQeDXVoM5A3YLbVIMpe",
+      accounts: {
+        mnemonic,
+      },
+      chainId: 8453,
+    },
     hardhat: {
       accounts: {
         count: 10,
@@ -22,9 +31,13 @@ const config: HardhatUserConfig = {
       },
       forking: {
         url: "https://base-mainnet.g.alchemy.com/v2/ZlzkGJhwX4ik8IQeDXVoM5A3YLbVIMpe",
-        blockNumber: 29834328,
-        // url: "https://eth-mainnet.g.alchemy.com/v2/ZlzkGJhwX4ik8IQeDXVoM5A3YLbVIMpe",
-        // blockNumber: 22396742,
+      },
+      chains: {
+        1337: {
+          hardforkHistory: {
+            london: 2000000,
+          },
+        },
       },
     },
   },

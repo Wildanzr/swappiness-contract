@@ -433,6 +433,9 @@ describe("Swappiness", () => {
         [USDC, 500, WETH] // 0.05% fee
       );
 
+      console.log("Exact USDC amount:", exactUsdcAmount);
+      console.log("Path to USDC:", pathToUsdc);
+
       // For ETH -> DAI: tokenOut + fee + tokenIn
       const pathToDai = ethers.solidityPacked(
         ["address", "uint24", "address"],
@@ -686,6 +689,96 @@ describe("Swappiness", () => {
         Number(formatUnits(exactDaiAmount, 18)) /
         Number(formatUnits(ethSpent, 18));
       console.log("Effective ETH/DAI rate:", ethDaiRate.toFixed(2));
+    });
+
+    it("Should disperse USDC to recipients direclty", async () => {
+      const { signers, swappiness, usdc } = await loadFixture(
+        deploySwappinessFixture
+      );
+
+      // Use different signers as recipients
+      const recipient1 = signers[5];
+      const recipient2 = signers[7];
+
+      // Store initial balances
+      const initialUsdcBalance1 = await usdc.balanceOf(recipient1.address);
+      const initialUsdcBalance2 = await usdc.balanceOf(recipient2.address);
+
+      // First get some USDC by swapping ETH
+      const seedUsdcAmount = parseUnits("100", 6); // Get 100 USDC to start with
+      const seedEthAmount = parseEther("0.06");
+
+      await swappiness.swapExactOutput(
+        ethers.ZeroAddress, // ETH input
+        USDC,
+        seedUsdcAmount,
+        seedEthAmount,
+        500, // 0.05% pool fee
+        {
+          value: seedEthAmount,
+        }
+      );
+
+      // Ensure we have enough USDC
+      expect(await usdc.balanceOf(signers[0].address)).to.be.gte(
+        seedUsdcAmount
+      );
+
+      // Define exact USDC output amounts
+      const exactUsdcAmount1 = parseUnits("10", 6); // 10 USDC
+      const exactUsdcAmount2 = parseUnits("15", 6); // 15 USDC
+      const totalUsdcToSpend = exactUsdcAmount1 + exactUsdcAmount2;
+
+      // Approve USDC for the contract to spend
+      await usdc.approve(await swappiness.getAddress(), totalUsdcToSpend);
+
+      // Execute the disperseToStablecoins with different recipients
+      const tx = await swappiness.disperseToStablecoins(
+        USDC, // USDC input
+        [recipient1.address, recipient2.address], // different recipients
+        [USDC, USDC], // output tokens (both USDC)
+        [exactUsdcAmount1, exactUsdcAmount2], // exact output amounts
+        [exactUsdcAmount1, exactUsdcAmount2], // max input amounts
+        [ethers.ZeroAddress, ethers.ZeroAddress] // no paths needed for direct USDC transfer
+      );
+      const receipt = await tx.wait();
+      if (!receipt) {
+        throw new Error("Transaction failed");
+      }
+      // Calculate gas cost
+      const gasUsed = receipt.gasUsed * receipt.gasPrice;
+      // Check balances after swap
+      const finalUsdcBalance = await usdc.balanceOf(signers[0].address);
+      const finalUsdcBalance1 = await usdc.balanceOf(recipient1.address);
+      const finalUsdcBalance2 = await usdc.balanceOf(recipient2.address);
+      // Calculate how much USDC was actually spent (excluding gas fees)
+      const usdcSpent =
+        initialUsdcBalance1 +
+        initialUsdcBalance2 -
+        finalUsdcBalance1 -
+        finalUsdcBalance2;
+      // Verify recipients received exactly the requested token amounts
+      expect(finalUsdcBalance1).to.equal(
+        initialUsdcBalance1 + exactUsdcAmount1
+      );
+      expect(finalUsdcBalance2).to.equal(
+        initialUsdcBalance2 + exactUsdcAmount2
+      );
+      // Verify USDC spent is less than or equal to maximum
+      expect(usdcSpent).to.be.lte(totalUsdcToSpend);
+      // Log details
+      console.log("--- USDC to Multiple Recipients Disperse Results ---");
+      console.log("Initial USDC balance:", formatUnits(initialUsdcBalance1, 6));
+      console.log("Final USDC balance:", formatUnits(finalUsdcBalance, 6));
+      console.log("USDC spent:", formatUnits(usdcSpent, 6));
+      console.log(
+        `Final USDC balance of recipient1 (${recipient1.address}):`,
+        formatUnits(finalUsdcBalance1, 6)
+      );
+      console.log(
+        `Final USDC balance of recipient2 (${recipient2.address}):`,
+        formatUnits(finalUsdcBalance2, 6)
+      );
     });
   });
 });

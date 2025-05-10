@@ -1,22 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+/**
+ * @title Swappiness
+ * @dev A contract for performing swaps through Uniswap V3 using the Universal Router
+ * @notice This contract enables swapping between ETH and various tokens or between different ERC20 tokens
+ * @notice THIS IS HOBBY PROJECT, DO NOT USE IN PRODUCTION
+ * @author danzrrr
+ */
 import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
 import {Commands} from "./interfaces/Commands.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IUniswapV3Factory} from "./interfaces/IUniswapV3Factory.sol";
 import {IPermit2} from "./interfaces/IPermit2.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
-
-// V3
-// IDRX/USDC		0.01%
-// USDC/USDT		0.01%
-// ETH/USDT		  0.05%
-// EURC/USDC		0.30%
-// ETH/EURC		  0.30%
-// DAI/USDC		  0.01%
-// ETH/DAI			0.05%
-// ETH/USDC		  0.05%
 
 contract Swappiness {
     address public owner;
@@ -35,6 +32,10 @@ contract Swappiness {
     event SwapCompleted(address tokenIn, address tokenOut, uint256 amountOut, uint256 amountInUsed);
     event DispersedToStablecoins(address tokenIn, uint256 totalAmountIn);
 
+    /**
+     * @notice Initializes the Swappiness contract
+     * @dev Sets up the owner, router, permit2, and WETH interfaces and approvals
+     */
     constructor() {
         owner = msg.sender;
         router = IUniversalRouter(0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD);
@@ -46,6 +47,7 @@ contract Swappiness {
 
     /**
      * @notice Swaps an exact output amount of any token using either ETH or ERC20 as input
+     * @dev Uses Universal Router and Permit2 for executing swaps
      * @param tokenIn Address of the input token (use address(0) for ETH)
      * @param tokenOut Address of the output token
      * @param amountOut Exact amount of output tokens to receive
@@ -135,6 +137,11 @@ contract Swappiness {
         return amountIn;
     }
 
+    /**
+     * @notice Performs a multi-hop swap from ETH to DAI through USDC using exact output amount
+     * @dev Predefined path of ETH > USDC > DAI with fixed pool fees
+     * @param amountOut Exact amount of DAI to receive
+     */
     function simpleMultiHopSwapExactOutput(uint256 amountOut) external payable {
         if (msg.value == 0) revert("No ETH sent");
         if (amountOut == 0) revert("AmountOut must be greater than zero");
@@ -163,6 +170,16 @@ contract Swappiness {
         }
     }
 
+    /**
+     * @notice Disperses input tokens to multiple stablecoin recipients in a single transaction
+     * @dev Executes multiple swaps in batch for different recipients and output tokens
+     * @param tokenIn Address of the input token (use address(0) for ETH)
+     * @param recipients Array of addresses to receive the swapped tokens
+     * @param tokenOut Array of output token addresses corresponding to each recipient
+     * @param amountOut Array of exact output amounts for each recipient
+     * @param amountInMax Array of maximum input amounts for each swap
+     * @param paths Array of encoded swap paths for each transaction
+     */
     function disperseToStablecoins(
         address tokenIn,
         address[] calldata recipients,
@@ -183,6 +200,7 @@ contract Swappiness {
 
         bool isEthInput = tokenIn == address(0);
         uint256 totalAmountInMax = 0;
+        address effectiveTokenIn = isEthInput ? address(weth) : tokenIn;
 
         // Validate amounts and calculate total required
         for (uint256 i = 0; i < swapCount; i++) {
@@ -195,7 +213,6 @@ contract Swappiness {
         if (isEthInput) {
             if (msg.value == 0) revert("No ETH sent");
             if (totalAmountInMax > msg.value) revert("Total amountInMax exceeds msg.value");
-            tokenIn = address(weth); // Set tokenIn to weth for paths
         } else {
             // ERC20 input validation & transfer
             IERC20(tokenIn).transferFrom(msg.sender, address(this), totalAmountInMax);
@@ -205,9 +222,39 @@ contract Swappiness {
 
         uint256 deadline = block.timestamp + 15 * 60; // 15 minutes
         uint256 totalUsed = 0;
+        uint256 ethUsed = 0;
 
-        // Process each swap
+        // Process each transfer or swap
         for (uint256 i = 0; i < swapCount; i++) {
+            // Check if tokenIn and tokenOut are the same (no swap needed)
+            bool sameToken = (tokenOut[i] == effectiveTokenIn);
+
+            // For ETH output if input is WETH
+            bool ethOutput = isEthInput && tokenOut[i] == address(0);
+
+            // Direct transfer case (same token)
+            if (sameToken || ethOutput) {
+                if (isEthInput) {
+                    if (ethOutput) {
+                        // ETH to ETH transfer (no conversion needed)
+                        payable(recipients[i]).transfer(amountOut[i]);
+                    } else {
+                        // ETH to WETH transfer (wrap ETH first)
+                        weth.deposit{value: amountOut[i]}();
+                        IERC20(address(weth)).transfer(recipients[i], amountOut[i]);
+                    }
+                    ethUsed += amountOut[i];
+                } else {
+                    // ERC20 to same ERC20 transfer
+                    IERC20(tokenIn).transfer(recipients[i], amountOut[i]);
+                }
+
+                emit SwapCompleted(isEthInput ? address(0) : tokenIn, tokenOut[i], amountOut[i], amountOut[i]);
+                totalUsed += amountOut[i];
+                continue;
+            }
+
+            // Regular swap case
             bytes memory commands;
             bytes[] memory inputs;
             uint256 ethValue = 0;
@@ -218,6 +265,7 @@ contract Swappiness {
                 inputs[0] = abi.encode(address(this), amountInMax[i]);
                 inputs[1] = abi.encode(recipients[i], amountOut[i], amountInMax[i], paths[i], true);
                 ethValue = amountInMax[i];
+                ethUsed += ethValue;
             } else {
                 commands = abi.encodePacked(bytes1(uint8(Commands.V3_SWAP_EXACT_OUT)));
                 inputs = new bytes[](1);
